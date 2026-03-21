@@ -2,7 +2,9 @@ import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
 export async function middleware(request: NextRequest) {
-  let supabaseResponse = NextResponse.next({ request })
+  let supabaseResponse = NextResponse.next({
+    request,
+  })
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -12,11 +14,14 @@ export async function middleware(request: NextRequest) {
         getAll() {
           return request.cookies.getAll()
         },
+        // We explicitly type 'cookiesToSet' as any[] to stop the 'any' error
         setAll(cookiesToSet: any[]) {
           cookiesToSet.forEach(({ name, value }) =>
             request.cookies.set(name, value)
           )
-          supabaseResponse = NextResponse.next({ request })
+          supabaseResponse = NextResponse.next({
+            request,
+          })
           cookiesToSet.forEach(({ name, value, options }) =>
             supabaseResponse.cookies.set(name, value, options)
           )
@@ -25,8 +30,18 @@ export async function middleware(request: NextRequest) {
     }
   )
 
-  // Refresh the session (required for Server Components to read auth state)
-  const { data: { user } } = await supabase.auth.getUser()
+  // This refreshes the session - VERY important for Next.js 15
+  await supabase.auth.getUser()
+
+  return supabaseResponse
+}
+
+// Ensure the middleware only runs on specific paths to save on Vercel usage
+export const config = {
+  matcher: [
+    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+  ],
+}
 
   const { pathname } = request.nextUrl
 
