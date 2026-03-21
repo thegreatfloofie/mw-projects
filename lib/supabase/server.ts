@@ -4,7 +4,7 @@ import { cookies } from 'next/headers'
 
 // Used in Server Components and Server Actions for authenticated AM access
 export async function createClient() {
-  const cookieStore = await cookies()
+  const cookieStore = await cookies() // Correct for Next.js 15
 
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -14,13 +14,14 @@ export async function createClient() {
         getAll() {
           return cookieStore.getAll()
         },
-        setAll(cookiesToSet) {
+        // We added ': any[]' below to fix the "Implicit Any" error
+        setAll(cookiesToSet: any[]) {
           try {
             cookiesToSet.forEach(({ name, value, options }) =>
               cookieStore.set(name, value, options)
             )
           } catch {
-            // Ignore: can't set cookies from Server Components, only Server Actions / Route Handlers
+            // Ignore: can't set cookies from Server Components
           }
         },
       },
@@ -29,7 +30,6 @@ export async function createClient() {
 }
 
 // Used ONLY for the public client view — bypasses RLS to fetch by token server-side.
-// This key is NEVER sent to the browser.
 export function createServiceRoleClient() {
   return createServiceClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
