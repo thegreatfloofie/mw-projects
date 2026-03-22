@@ -11,7 +11,7 @@ const STATUS_CONFIG: Record<string, { bg: string; color: string; dot: string }> 
   'In Progress':      { bg: '#dce8ff', color: '#001fa8', dot: '#0038FF' },
   'Up Next':          { bg: '#feffc0', color: '#4a4500', dot: '#EEFF25' },
   'Awaiting Client':  { bg: '#ffe7de', color: '#7a2000', dot: '#FF5E30' },
-  'Feedback Provided':{ bg: '#eeffb8', color: '#1a4a00', dot: '#CEFF58' },
+  'Feedback Provided':{ bg: '#f0e6ff', color: '#5b21b6', dot: '#7c3aed' },
   'Complete':         { bg: '#dde8e2', color: '#2d4a3a', dot: '#B4C6BB' },
 }
 const STATUSES = Object.keys(STATUS_CONFIG) as TaskStatus[]
@@ -354,6 +354,21 @@ export default function TrackerView({ data }: Props) {
     await Promise.all(updates)
   }
 
+  // ── Delete task ────────────────────────────────────────────
+  async function deleteTask(taskId: string) {
+    const task = tasks[taskId]
+    if (!task) return
+    // Remove from local state immediately
+    setSections(prev => {
+      const next = { ...prev }
+      const sec = task.section as Section
+      if (next[sec]) next[sec] = next[sec].filter(id => id !== taskId)
+      return next
+    })
+    setTasks(prev => { const n = { ...prev }; delete n[taskId]; return n })
+    await supabase.from('tasks').delete().eq('id', taskId)
+  }
+
   // ── Bulk actions ───────────────────────────────────────────
   function toggleSelect(id: string) {
     setSelectedIds(prev => {
@@ -457,7 +472,6 @@ export default function TrackerView({ data }: Props) {
             <button className="btn-ghost" onClick={copyClientLink}>
               {copyLinkMsg ? '✓ Copied!' : 'Copy Client Link'}
             </button>
-            <span className="header-badge">LIVE</span>
           </div>
         </header>
 
@@ -562,44 +576,70 @@ export default function TrackerView({ data }: Props) {
               onArchive={sec === 'done' ? archiveCompleted : undefined}
               onToggleSelect={toggleSelect}
               onToggleSelectAll={toggleSelectAll}
+              onDelete={deleteTask}
             />
           ))}
 
           {/* Archive view */}
-          {archivedTasks.length > 0 && (
-            <div style={{ marginTop: 8 }}>
-              <button
-                className="summary-pill"
-                style={{ fontSize: 12 }}
-                onClick={() => setShowArchive(p => !p)}
-              >
-                {showArchive ? '▲' : '▼'} Archive ({archivedTasks.length})
-              </button>
-              {showArchive && (
-                <div className="tracker-section" style={{ marginTop: 8, opacity: 0.7 }}>
-                  <table className="tracker-table">
+          <div style={{ marginTop: 16 }}>
+            <div
+              style={{
+                display: 'flex', alignItems: 'center', gap: 10, padding: '10px 16px',
+                background: 'white', borderRadius: showArchive ? '12px 12px 0 0' : 12,
+                border: '1.5px solid #e5e7eb', cursor: 'pointer', userSelect: 'none',
+                borderBottom: showArchive ? '1px solid #e5e7eb' : '1.5px solid #e5e7eb',
+              }}
+              onClick={() => setShowArchive(p => !p)}
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ color: '#9ca3af', flexShrink: 0 }}>
+                <path d="M1.5 3.5h11M2.5 3.5V11a1 1 0 001 1h7a1 1 0 001-1V3.5M4.5 3.5V2.5a1 1 0 011-1h3a1 1 0 011 1v1M5.5 6.5h3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#6b7280', flex: 1 }}>
+                Task Archive
+              </span>
+              {archivedTasks.length > 0 && (
+                <span style={{ fontSize: 11, fontWeight: 700, background: '#f3f4f6', color: '#6b7280', padding: '2px 9px', borderRadius: 20 }}>
+                  {archivedTasks.length} item{archivedTasks.length !== 1 ? 's' : ''}
+                </span>
+              )}
+              {archivedTasks.length === 0 && (
+                <span style={{ fontSize: 11, color: '#9ca3af' }}>Empty</span>
+              )}
+              <svg style={{ width: 14, height: 14, color: '#9ca3af', transform: showArchive ? 'rotate(90deg)' : 'none', transition: 'transform .15s', marginLeft: 4 }} viewBox="0 0 16 16" fill="none">
+                <path d="M6 4l4 4-4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </div>
+            {showArchive && (
+              <div style={{ background: 'white', borderRadius: '0 0 12px 12px', border: '1.5px solid #e5e7eb', borderTop: 'none' }}>
+                {archivedTasks.length === 0 ? (
+                  <div style={{ padding: '24px 16px', textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>
+                    No archived tasks yet. Use "Archive all" on the Completed section to move finished work here.
+                  </div>
+                ) : (
+                  <table className="tracker-table" style={{ opacity: 0.8 }}>
                     <thead>
                       <tr>
                         <th className="col-item">Deliverable</th>
                         <th className="col-status">Status</th>
-                        <th className="col-due">Due</th>
+                        <th className="col-due">Completed by</th>
                         <th className="col-notes">Description</th>
                       </tr>
                     </thead>
                     <tbody>
                       {archivedTasks.map(t => (
                         <tr key={t.id}>
-                          <td className="col-item" style={{ color: '#6b7280' }}>{t.name}</td>
+                          <td className="col-item" style={{ color: '#6b7280' }}>{t.name || <span className="muted">Untitled</span>}</td>
                           <td className="col-status"><span style={{ fontSize: 11, color: '#9ca3af' }}>{t.status}</span></td>
                           <td className="col-due" style={{ fontSize: 12, color: '#9ca3af' }}>{t.due_date ?? '—'}</td>
-                          <td className="col-notes" style={{ fontSize: 12, color: '#9ca3af' }}>{t.notes}</td>
+                          <td className="col-notes" style={{ fontSize: 12, color: '#9ca3af' }}>{t.notes || '—'}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
-                </div>
-              )}
-            </div>
+                )}
+              </div>
+            )}
+          </div>
           )}
         </main>
       </div>
@@ -724,6 +764,7 @@ interface SectionProps {
   onArchive?: () => void
   onToggleSelect: (id: string) => void
   onToggleSelectAll: (ids: string[]) => void
+  onDelete: (id: string) => void
 }
 
 function TrackerSection({
@@ -733,7 +774,7 @@ function TrackerSection({
   onStatusOpen, onStatusChange, onLinkOpen, onLinkSave,
   onNoteEdit, onNoteSave, onCommentOpen, onCommentSave,
   onAddItem, onDragStart, onDragOver, onDragEnd, onArchive,
-  onToggleSelect, onToggleSelectAll,
+  onToggleSelect, onToggleSelectAll, onDelete,
 }: SectionProps) {
   const [linkUrl, setLinkUrl] = useState<Record<string, string>>({})
   const [linkLabel, setLinkLabel] = useState<Record<string, string>>({})
@@ -752,10 +793,18 @@ function TrackerSection({
         <span className="section-count">{visibleCount} item{visibleCount !== 1 ? 's' : ''}</span>
         {onArchive && visibleCount > 0 && (
           <button
-            className="btn-cancel"
-            style={{ fontSize: 11, padding: '2px 8px', marginRight: 6 }}
+            style={{
+              fontSize: 11, fontWeight: 600, padding: '3px 10px', marginRight: 6,
+              border: '1.5px solid #d1d5db', borderRadius: 6, background: 'white',
+              color: '#6b7280', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5,
+            }}
             onClick={e => { e.stopPropagation(); onArchive() }}
-          >Archive all</button>
+          >
+            <svg width="11" height="11" viewBox="0 0 14 14" fill="none">
+              <path d="M1.5 3.5h11M2.5 3.5V11a1 1 0 001 1h7a1 1 0 001-1V3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+            </svg>
+            Archive all
+          </button>
         )}
         <div className={`section-chev${collapsed ? '' : ' open'}`}>
           <svg viewBox="0 0 16 16" fill="none"><path d="M6 4l4 4-4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
@@ -782,6 +831,7 @@ function TrackerSection({
                 <th className="col-link">Link</th>
                 <th className="col-notes">Description</th>
                 <th className="col-comments">Comments</th>
+                <th style={{ width: 32 }}/>
               </tr>
             </thead>
             <tbody>
@@ -928,6 +978,23 @@ function TrackerSection({
                           </div>
                         </div>
                       </div>
+                    </td>
+
+                    {/* Delete */}
+                    <td className="col-delete" style={{ width: 32, padding: '9px 4px', verticalAlign: 'middle', textAlign: 'center' }} onClick={e => e.stopPropagation()}>
+                      <button
+                        className="btn-delete-task"
+                        title="Delete task"
+                        onClick={() => {
+                          if (window.confirm(`Delete "${task.name || 'Untitled'}"? This cannot be undone.`)) {
+                            onDelete(id)
+                          }
+                        }}
+                      >
+                        <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
+                          <path d="M2 4h10M5 4V3a1 1 0 011-1h2a1 1 0 011 1v1M11 4l-.9 7.2A1 1 0 019.1 12H4.9a1 1 0 01-1-.8L3 4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                      </button>
                     </td>
                   </tr>
                 )
