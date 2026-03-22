@@ -21,7 +21,7 @@ create table public.tasks (
   client_id     uuid not null references public.clients(id) on delete cascade,
   -- section: which column the task lives in
   section       text not null default 'mw'
-                  check (section in ('mw', 'client', 'done')),
+                  check (section in ('mw', 'client', 'done', 'archived')),
   -- origin: where the task was originally created (for "un-move" logic)
   origin        text not null default 'mw'
                   check (origin in ('mw', 'client', 'done')),

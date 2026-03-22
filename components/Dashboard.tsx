@@ -154,6 +154,11 @@ export default function Dashboard({ initialClients }: Props) {
                         <div className="card-stat-num">{client.completedCount}</div>
                         <div className="card-stat-lbl">Com-<br/>pleted</div>
                       </div>
+                      {client.overdueCount > 0 && (
+                        <span className="card-draft-badge" style={{ background: '#ffe4e1', color: '#991b1b' }}>
+                          ⚠ {client.overdueCount} overdue
+                        </span>
+                      )}
                       {client.draftCount > 0 && (
                         <span className="card-draft-badge">⚠ {client.draftCount} pending review</span>
                       )}

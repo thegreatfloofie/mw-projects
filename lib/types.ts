@@ -22,7 +22,7 @@ export interface Client {
 export interface Task {
   id: string
   client_id: string
-  section: Section
+  section: Section | 'archived'
   origin: Section
   name: string
   notes: string
@@ -44,6 +44,7 @@ export interface Draft {
   notes: string
   status: TaskStatus
   target_section: 'mw' | 'client'
+  due_date?: string | null
   drafted_at: string
 }
 
@@ -53,6 +54,7 @@ export interface ClientWithStats extends Client {
   taskCount: number
   draftCount: number
   completedCount: number
+  overdueCount: number
 }
 
 export interface TrackerData {

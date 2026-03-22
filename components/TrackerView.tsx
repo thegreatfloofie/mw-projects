@@ -1,11 +1,10 @@
 'use client'
 
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { TrackerData, Task, Draft, Section, TaskStatus, Client } from '@/lib/types'
 import MWLogo from './MWLogo'
-import MickeyCelebration from './MickeyCelebration'
 
 // ── Status config ──────────────────────────────────────────────
 const STATUS_CONFIG: Record<string, { bg: string; color: string; dot: string }> = {
@@ -25,7 +24,6 @@ const SECTION_ACCENTS: Record<Section, string> = {
   mw: '#CEFF58', client: '#FF5E30', done: '#B4C6BB',
 }
 
-// ── Section for a given status change ──────────────────────────
 function targetSectionForStatus(status: TaskStatus): Section | null {
   if (status === 'Complete') return 'done'
   if (status === 'Awaiting Client') return 'client'
@@ -33,16 +31,50 @@ function targetSectionForStatus(status: TaskStatus): Section | null {
   return null
 }
 
+// ── Relative time helper ───────────────────────────────────────
+function timeAgo(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime()
+  const mins = Math.floor(diff / 60000)
+  if (mins < 2)  return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24)  return `${hrs}h ago`
+  const days = Math.floor(hrs / 24)
+  if (days < 7)  return `${days}d ago`
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
+
+// ── Confetti celebration ───────────────────────────────────────
+function ConfettiCelebration({ active }: { active: boolean }) {
+  if (!active) return null
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 9999,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }}>
+      <div style={{
+        fontSize: 80,
+        animation: 'confettiBounce 0.5s cubic-bezier(.34,1.56,.64,1) forwards',
+      }}>🎉</div>
+      <style>{`
+        @keyframes confettiBounce {
+          0%   { transform: scale(0) rotate(-15deg); opacity: 0; }
+          60%  { transform: scale(1.2) rotate(5deg);  opacity: 1; }
+          100% { transform: scale(1)   rotate(0deg);  opacity: 1; }
+        }
+      `}</style>
+    </div>
+  )
+}
+
 interface Props { data: TrackerData }
 
 export default function TrackerView({ data }: Props) {
-  const router = useRouter()
   const supabase = createClient()
 
-  // ── State ──────────────────────────────────────────────────
   const [client, setClient] = useState<Client>(data.client)
   const [tasks, setTasks] = useState<Record<string, Task>>(
-    Object.fromEntries(data.tasks.map(t => [t.id, t]))
+    Object.fromEntries(data.tasks.filter(t => t.section !== 'archived').map(t => [t.id, t]))
   )
   const [sections, setSections] = useState<Record<Section, string[]>>(() => {
     const s: Record<Section, string[]> = { mw: [], client: [], done: [] }
@@ -71,12 +103,25 @@ export default function TrackerView({ data }: Props) {
   const [importError, setImportError] = useState('')
   const [showCelebration, setShowCelebration] = useState(false)
   const [logoUrl, setLogoUrl] = useState<string | null>(client.logo_url)
+  const [archivedTasks, setArchivedTasks] = useState<Task[]>(
+    data.tasks.filter(t => t.section === 'archived')
+  )
+  const [showArchive, setShowArchive] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkStatus, setBulkStatus] = useState<TaskStatus | ''>('')
+  const [bulkSection, setBulkSection] = useState<Section | ''>('')
+  const [copyLinkMsg, setCopyLinkMsg] = useState(false)
   const logoInputRef = useRef<HTMLInputElement>(null)
   const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
 
-  // Form fields for single-task import
+  // Drag state
+  const dragId = useRef<string | null>(null)
+  const dragSec = useRef<Section | null>(null)
+
+  // Single task form fields
   const [iformName, setIformName] = useState('')
   const [iformNotes, setIformNotes] = useState('')
+  const [iformDue, setIformDue] = useState('')
   const [iformStatus, setIformStatus] = useState<TaskStatus>('Up Next')
   const [iformSection, setIformSection] = useState<'mw' | 'client'>('mw')
 
@@ -92,7 +137,7 @@ export default function TrackerView({ data }: Props) {
     return () => document.removeEventListener('mousedown', handler)
   }, [])
 
-  // ── Debounced Supabase save ────────────────────────────────
+  // ── Debounced save ─────────────────────────────────────────
   function scheduleSave(taskId: string, patch: Partial<Task>) {
     clearTimeout(saveTimers.current[taskId])
     saveTimers.current[taskId] = setTimeout(async () => {
@@ -114,17 +159,14 @@ export default function TrackerView({ data }: Props) {
   async function handleStatusChange(taskId: string, newStatus: TaskStatus) {
     const task = tasks[taskId]
     if (!task) return
-    const prevStatus = task.status
     const destSec = targetSectionForStatus(newStatus)
     const moveTo: Section = destSec ?? (task.origin as Section) ?? 'mw'
 
-    // Trigger Mickey if completing
     if (newStatus === 'Complete') {
       setShowCelebration(true)
-      setTimeout(() => setShowCelebration(false), 3200)
+      setTimeout(() => setShowCelebration(false), 2000)
     }
 
-    // Move between sections if needed
     if (moveTo !== task.section) {
       setSections(prev => {
         const next = { ...prev }
@@ -132,15 +174,14 @@ export default function TrackerView({ data }: Props) {
         next[moveTo] = [...next[moveTo], taskId]
         return next
       })
-      patchTask(taskId, { status: newStatus, section: moveTo }, true)
-    } else {
-      patchTask(taskId, { status: newStatus }, true)
     }
+    patchTask(taskId, { status: newStatus, section: moveTo }, true)
     setOpenPickerId(null)
   }
 
   // ── Add item ───────────────────────────────────────────────
   async function addItem(sec: Section) {
+    const order = sections[sec].length
     const { data: newTask, error } = await supabase
       .from('tasks')
       .insert({
@@ -150,14 +191,41 @@ export default function TrackerView({ data }: Props) {
         name: '',
         notes: '',
         status: 'Up Next',
-        display_order: sections[sec].length,
+        due_date: null,
+        link_url: '',
+        link_label: '',
+        comments: '',
+        display_order: order,
+        ai_drafted: false,
       })
       .select()
       .single()
-    if (error || !newTask) return
-    setTasks(prev => ({ ...prev, [newTask.id]: newTask }))
+
+    if (error || !newTask) {
+      console.error('Add item failed:', error)
+      return
+    }
+
+    setTasks(prev => ({ ...prev, [newTask.id]: newTask as Task }))
     setSections(prev => ({ ...prev, [sec]: [...prev[sec], newTask.id] }))
     setTimeout(() => setEditingNameId(newTask.id), 50)
+  }
+
+  // ── Archive ────────────────────────────────────────────────
+  async function archiveCompleted() {
+    const doneIds = sections.done
+    if (doneIds.length === 0) return
+    const toArchive = doneIds.map(id => tasks[id]).filter(Boolean)
+    await supabase.from('tasks').update({ section: 'archived' as any }).in('id', doneIds)
+    setArchivedTasks(prev => [...prev, ...toArchive])
+    setSections(prev => ({ ...prev, done: [] }))
+    doneIds.forEach(id => {
+      setTasks(prev => {
+        const next = { ...prev }
+        delete next[id]
+        return next
+      })
+    })
   }
 
   // ── Draft actions ──────────────────────────────────────────
@@ -178,14 +246,19 @@ export default function TrackerView({ data }: Props) {
         name: draft.name,
         notes: draft.notes,
         status: draft.status,
+        due_date: (draft as any).due_date || null,
+        link_url: '',
+        link_label: '',
+        comments: '',
         display_order: sections[sec].length,
-        ai_drafted: true,
+        ai_drafted: false,
       })
       .select()
       .single()
+
     if (error || !newTask) return
     await supabase.from('drafts').delete().eq('id', draftId)
-    setTasks(prev => ({ ...prev, [newTask.id]: newTask }))
+    setTasks(prev => ({ ...prev, [newTask.id]: newTask as Task }))
     setSections(prev => ({ ...prev, [sec]: [...prev[sec], newTask.id] }))
     setDrafts(prev => prev.filter(d => d.id !== draftId))
   }
@@ -195,7 +268,7 @@ export default function TrackerView({ data }: Props) {
     setDrafts(prev => prev.filter(d => d.id !== draftId))
   }
 
-  // ── Import modal: JSON ─────────────────────────────────────
+  // ── Import JSON ────────────────────────────────────────────
   async function processImportJson() {
     setImportError('')
     let items: any[]
@@ -206,28 +279,27 @@ export default function TrackerView({ data }: Props) {
       name: String(item.name || ''),
       notes: String(item.notes || item.description || ''),
       status: (STATUSES.includes(item.status) ? item.status : 'Up Next') as TaskStatus,
-      target_section: (['mw', 'client'].includes(item.section) ? item.section : 'mw') as 'mw' | 'client',
+      target_section: (['mw','client'].includes(item.section) ? item.section : 'mw') as 'mw'|'client',
+      due_date: item.due_date || null,
     }))
     const { data, error } = await supabase.from('drafts').insert(newDrafts).select()
     if (error || !data) { setImportError('Failed to save drafts.'); return }
-    setDrafts(prev => [...prev, ...data])
-    setShowImportModal(false)
-    setImportJson('')
-    setDraftPanelOpen(true)
+    setDrafts(prev => [...prev, ...(data as Draft[])])
+    setShowImportModal(false); setImportJson(''); setDraftPanelOpen(true)
   }
 
-  // ── Import modal: single form ──────────────────────────────
+  // ── Import single form ─────────────────────────────────────
   async function processImportForm() {
     if (!iformName.trim()) { setImportError('Deliverable name is required.'); return }
     const { data, error } = await supabase
       .from('drafts')
-      .insert({ client_id: client.id, name: iformName.trim(), notes: iformNotes, status: iformStatus, target_section: iformSection })
+      .insert({ client_id: client.id, name: iformName.trim(), notes: iformNotes, status: iformStatus, target_section: iformSection, due_date: iformDue || null })
       .select()
       .single()
     if (error || !data) { setImportError('Failed to save draft.'); return }
-    setDrafts(prev => [...prev, data])
+    setDrafts(prev => [...prev, data as Draft])
     setShowImportModal(false)
-    setIformName(''); setIformNotes(''); setIformStatus('Up Next'); setIformSection('mw')
+    setIformName(''); setIformNotes(''); setIformDue(''); setIformStatus('Up Next'); setIformSection('mw')
     setDraftPanelOpen(true)
   }
 
@@ -245,12 +317,88 @@ export default function TrackerView({ data }: Props) {
     reader.readAsDataURL(file)
   }
 
-  // ── Filter / sort ──────────────────────────────────────────
-  function isTaskHidden(task: Task): boolean {
-    if (filter === 'all') return false
-    return task.status !== filter
+  // ── Copy client link ───────────────────────────────────────
+  function copyClientLink() {
+    const url = `${window.location.origin}/c/${client.client_token}`
+    navigator.clipboard.writeText(url)
+    setCopyLinkMsg(true)
+    setTimeout(() => setCopyLinkMsg(false), 2000)
   }
 
+  // ── Drag and drop ──────────────────────────────────────────
+  function handleDragStart(id: string, sec: Section) {
+    dragId.current = id
+    dragSec.current = sec
+  }
+
+  function handleDragOver(e: React.DragEvent, overId: string, sec: Section) {
+    e.preventDefault()
+    if (!dragId.current || dragId.current === overId || dragSec.current !== sec) return
+    setSections(prev => {
+      const ids = [...prev[sec]]
+      const from = ids.indexOf(dragId.current!)
+      const to = ids.indexOf(overId)
+      if (from === -1 || to === -1) return prev
+      ids.splice(from, 1); ids.splice(to, 0, dragId.current!)
+      return { ...prev, [sec]: ids }
+    })
+  }
+
+  async function handleDragEnd(sec: Section) {
+    dragId.current = null
+    dragSec.current = null
+    // Persist new order
+    const ids = sections[sec]
+    const updates = ids.map((id, i) => supabase.from('tasks').update({ display_order: i }).eq('id', id))
+    await Promise.all(updates)
+  }
+
+  // ── Bulk actions ───────────────────────────────────────────
+  function toggleSelect(id: string) {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+
+  function toggleSelectAll(ids: string[]) {
+    const allSelected = ids.every(id => selectedIds.has(id))
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (allSelected) ids.forEach(id => next.delete(id))
+      else ids.forEach(id => next.add(id))
+      return next
+    })
+  }
+
+  async function applyBulkStatus(newStatus: TaskStatus) {
+    const ids = [...selectedIds]
+    for (const id of ids) {
+      await handleStatusChange(id, newStatus)
+    }
+    setSelectedIds(new Set())
+    setBulkStatus('')
+  }
+
+  async function applyBulkSection(newSec: Section) {
+    const ids = [...selectedIds]
+    for (const id of ids) {
+      const task = tasks[id]
+      if (!task || task.section === newSec) continue
+      setSections(prev => {
+        const next = { ...prev }
+        next[task.section as Section] = next[task.section as Section].filter(i => i !== id)
+        next[newSec] = [...next[newSec], id]
+        return next
+      })
+      patchTask(id, { section: newSec }, true)
+    }
+    setSelectedIds(new Set())
+    setBulkSection('')
+  }
+
+  // ── Filter / sort ──────────────────────────────────────────
   function getSortedTaskIds(sec: Section): string[] {
     let ids = [...sections[sec]]
     if (sortDir) {
@@ -259,27 +407,12 @@ export default function TrackerView({ data }: Props) {
         if (!ta?.due_date && !tb?.due_date) return 0
         if (!ta?.due_date) return 1
         if (!tb?.due_date) return -1
-        return sortDir === 'asc'
-          ? ta.due_date.localeCompare(tb.due_date)
-          : tb.due_date.localeCompare(ta.due_date)
+        return sortDir === 'asc' ? ta.due_date!.localeCompare(tb.due_date!) : tb.due_date!.localeCompare(ta.due_date!)
       })
     }
     return ids
   }
 
-  // ── Export client view (generates static HTML) ─────────────
-  function exportClientView() {
-    const clientTasks = data.tasks // We'd regenerate, but keep it simple: use current state
-    const html = buildClientHTML(client, Object.values(tasks))
-    const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    a.download = (client.name.replace(/[^a-z0-9]/gi, '_').toLowerCase() || 'client') + '_tracker.html'
-    document.body.appendChild(a); a.click()
-    document.body.removeChild(a); URL.revokeObjectURL(a.href)
-  }
-
-  // ── Render ─────────────────────────────────────────────────
   return (
     <>
       <div className="tracker-page">
@@ -294,11 +427,10 @@ export default function TrackerView({ data }: Props) {
             <div className="header-divider"/>
             <MWLogo />
             <div className="header-divider"/>
-            {/* Client logo slot */}
             <div className="client-logo-wrap">
               {logoUrl ? (
                 <>
-                  <img className="client-logo-img" src={logoUrl} alt={client.name} />
+                  <img className="client-logo-img" src={logoUrl} alt={client.name}/>
                   <button className="btn-change-logo" onClick={() => logoInputRef.current?.click()} title="Change logo">
                     <svg width="10" height="10" viewBox="0 0 12 12" fill="none">
                       <path d="M1 9.5V11h1.5l5-5-1.5-1.5-5 5zm8.7-5.2a.5.5 0 000-.7L8.4 2.3a.5.5 0 00-.7 0L6.8 3.2l2.2 2.2.7-.7z" fill="rgba(255,255,255,.65)"/>
@@ -318,22 +450,11 @@ export default function TrackerView({ data }: Props) {
             <span className="tracker-am-tag">AM: {client.am_name}</span>
           </div>
           <div className="header-right">
-            <button className="btn-import" onClick={() => { setShowImportModal(true); setImportError('') }}>
-              <svg viewBox="0 0 12 12" fill="none">
-                <path d="M6 1v7M6 8L3.5 5.5M6 8L8.5 5.5M1.5 10.5h9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+            <button className="btn-ghost" onClick={() => { setShowImportModal(true); setImportError('') }}>
               Import Drafts
             </button>
-            <button
-              className="btn-ghost"
-              style={{ fontSize: 12 }}
-              onClick={() => {
-                const url = `${window.location.origin}/c/${client.client_token}`
-                navigator.clipboard.writeText(url)
-              }}
-              title="Copy client-facing link to clipboard"
-            >
-              Copy Client Link
+            <button className="btn-ghost" onClick={copyClientLink}>
+              {copyLinkMsg ? '✓ Copied!' : 'Copy Client Link'}
             </button>
             <span className="header-badge">LIVE</span>
           </div>
@@ -343,23 +464,13 @@ export default function TrackerView({ data }: Props) {
           {/* Filter bar */}
           <div className="filter-bar">
             {(['all', ...STATUSES] as string[]).map(s => (
-              <button
-                key={s}
-                className={`summary-pill${filter === s ? ' active' : ''}`}
-                onClick={() => setFilter(s)}
-              >{s === 'all' ? 'All' : s}</button>
+              <button key={s} className={`summary-pill${filter === s ? ' active' : ''}`} onClick={() => setFilter(s)}>
+                {s === 'all' ? 'All' : s}
+              </button>
             ))}
-            <div className="filter-spacer" />
-            <button
-              id="sort-asc"
-              className={`sort-btn${sortDir === 'asc' ? ' sort-active' : ''}`}
-              onClick={() => setSortDir(sortDir === 'asc' ? null : 'asc')}
-            >↑ Due Date</button>
-            <button
-              id="sort-desc"
-              className={`sort-btn${sortDir === 'desc' ? ' sort-active' : ''}`}
-              onClick={() => setSortDir(sortDir === 'desc' ? null : 'desc')}
-            >↓ Due Date</button>
+            <div className="filter-spacer"/>
+            <button className={`sort-btn${sortDir === 'asc' ? ' sort-active' : ''}`} onClick={() => setSortDir(sortDir === 'asc' ? null : 'asc')}>↑ Due</button>
+            <button className={`sort-btn${sortDir === 'desc' ? ' sort-active' : ''}`} onClick={() => setSortDir(sortDir === 'desc' ? null : 'desc')}>↓ Due</button>
           </div>
 
           {/* Draft panel */}
@@ -368,19 +479,20 @@ export default function TrackerView({ data }: Props) {
               <div className="draft-panel-hdr" onClick={() => setDraftPanelOpen(p => !p)}>
                 <span className="draft-panel-title">AI Draft Queue</span>
                 <span className="draft-count-chip">{drafts.length} pending</span>
-                <span style={{ flex: 1 }} />
-                <span style={{ fontSize: 11, color: '#8a7a00' }}>{draftPanelOpen ? '▲ Collapse' : '▼ Expand'}</span>
+                <span style={{ flex: 1 }}/>
+                <span style={{ fontSize: 11, color: '#8a7a00' }}>{draftPanelOpen ? '▲' : '▼'}</span>
               </div>
               {draftPanelOpen && (
                 <div className="draft-panel-body">
                   <table className="draft-table">
                     <thead>
                       <tr>
-                        <th style={{ width: '22%' }}>Deliverable</th>
-                        <th style={{ width: '24%' }}>Description</th>
-                        <th style={{ width: '14%' }}>Status</th>
-                        <th style={{ width: '12%' }}>Section</th>
-                        <th style={{ width: '28%' }}>Actions</th>
+                        <th style={{ width: '20%' }}>Deliverable</th>
+                        <th style={{ width: '22%' }}>Description</th>
+                        <th style={{ width: '10%' }}>Due Date</th>
+                        <th style={{ width: '13%' }}>Status</th>
+                        <th style={{ width: '11%' }}>Section</th>
+                        <th style={{ width: '24%' }}>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -388,6 +500,7 @@ export default function TrackerView({ data }: Props) {
                         <tr key={d.id}>
                           <td><input className="draft-field" value={d.name} onChange={e => updateDraftField(d.id, 'name', e.target.value)} placeholder="Deliverable name…"/></td>
                           <td><input className="draft-field" value={d.notes} onChange={e => updateDraftField(d.id, 'notes', e.target.value)} placeholder="Description…"/></td>
+                          <td><input className="draft-field" type="date" value={(d as any).due_date || ''} onChange={e => updateDraftField(d.id, 'due_date' as any, e.target.value)}/></td>
                           <td>
                             <select className="draft-section-select" value={d.status} onChange={e => updateDraftField(d.id, 'status', e.target.value)}>
                               {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
@@ -420,11 +533,6 @@ export default function TrackerView({ data }: Props) {
               taskIds={getSortedTaskIds(sec)}
               tasks={tasks}
               collapsed={collapsedSections.has(sec)}
-              onToggle={() => setCollapsedSections(prev => {
-                const next = new Set(prev)
-                next.has(sec) ? next.delete(sec) : next.add(sec)
-                return next
-              })}
               filter={filter}
               editingNameId={editingNameId}
               editingDueId={editingDueId}
@@ -432,37 +540,111 @@ export default function TrackerView({ data }: Props) {
               openLinkId={openLinkId}
               openCommentId={openCommentId}
               editingNoteId={editingNoteId}
-              onNameEdit={(id) => setEditingNameId(id)}
+              selectedIds={selectedIds}
+              onToggle={() => setCollapsedSections(prev => { const n = new Set(prev); n.has(sec) ? n.delete(sec) : n.add(sec); return n })}
+              onNameEdit={setEditingNameId}
               onNameSave={(id, val) => { patchTask(id, { name: val }, true); setEditingNameId(null) }}
-              onDueEdit={(id) => setEditingDueId(id)}
+              onDueEdit={setEditingDueId}
               onDueSave={(id, val) => { patchTask(id, { due_date: val || null }, true); setEditingDueId(null) }}
-              onStatusOpen={(id) => setOpenPickerId(openPickerId === id ? null : id)}
+              onStatusOpen={id => setOpenPickerId(openPickerId === id ? null : id)}
               onStatusChange={handleStatusChange}
-              onLinkOpen={(id) => setOpenLinkId(openLinkId === id ? null : id)}
+              onLinkOpen={id => setOpenLinkId(openLinkId === id ? null : id)}
               onLinkSave={(id, url, label) => { patchTask(id, { link_url: url, link_label: label }, true); setOpenLinkId(null) }}
-              onNoteEdit={(id) => setEditingNoteId(id)}
+              onNoteEdit={setEditingNoteId}
               onNoteSave={(id, val) => { patchTask(id, { notes: val }, true); setEditingNoteId(null) }}
-              onCommentOpen={(id) => setOpenCommentId(openCommentId === id ? null : id)}
+              onCommentOpen={id => setOpenCommentId(openCommentId === id ? null : id)}
               onCommentSave={(id, val) => { patchTask(id, { comments: val }, true); setOpenCommentId(null) }}
               onAddItem={() => addItem(sec)}
+              onDragStart={handleDragStart}
+              onDragOver={handleDragOver}
+              onDragEnd={handleDragEnd}
+              onArchive={sec === 'done' ? archiveCompleted : undefined}
+              onToggleSelect={toggleSelect}
+              onToggleSelectAll={toggleSelectAll}
             />
           ))}
+
+          {/* Archive view */}
+          {archivedTasks.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <button
+                className="summary-pill"
+                style={{ fontSize: 12 }}
+                onClick={() => setShowArchive(p => !p)}
+              >
+                {showArchive ? '▲' : '▼'} Archive ({archivedTasks.length})
+              </button>
+              {showArchive && (
+                <div className="tracker-section" style={{ marginTop: 8, opacity: 0.7 }}>
+                  <table className="tracker-table">
+                    <thead>
+                      <tr>
+                        <th className="col-item">Deliverable</th>
+                        <th className="col-status">Status</th>
+                        <th className="col-due">Due</th>
+                        <th className="col-notes">Description</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {archivedTasks.map(t => (
+                        <tr key={t.id}>
+                          <td className="col-item" style={{ color: '#6b7280' }}>{t.name}</td>
+                          <td className="col-status"><span style={{ fontSize: 11, color: '#9ca3af' }}>{t.status}</span></td>
+                          <td className="col-due" style={{ fontSize: 12, color: '#9ca3af' }}>{t.due_date ?? '—'}</td>
+                          <td className="col-notes" style={{ fontSize: 12, color: '#9ca3af' }}>{t.notes}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
         </main>
       </div>
 
-      {/* Mickey celebration */}
-      <MickeyCelebration active={showCelebration} />
+      {/* Floating bulk action bar */}
+      {selectedIds.size > 0 && (
+        <div style={{
+          position: 'fixed', bottom: 28, left: '50%', transform: 'translateX(-50%)',
+          background: '#0C0C0C', borderRadius: 12, padding: '10px 18px',
+          display: 'flex', alignItems: 'center', gap: 12,
+          boxShadow: '0 8px 32px rgba(0,0,0,.35)', zIndex: 500, whiteSpace: 'nowrap',
+        }}>
+          <span style={{ color: 'rgba(255,255,255,.7)', fontSize: 12, fontWeight: 600 }}>
+            {selectedIds.size} selected
+          </span>
+          <div style={{ width: 1, height: 18, background: 'rgba(255,255,255,.2)' }}/>
+          <select
+            style={{ fontSize: 12, fontWeight: 600, background: 'rgba(255,255,255,.1)', color: 'white', border: '1px solid rgba(255,255,255,.2)', borderRadius: 6, padding: '4px 8px', cursor: 'pointer' }}
+            value={bulkStatus}
+            onChange={e => { if (e.target.value) applyBulkStatus(e.target.value as TaskStatus) }}
+          >
+            <option value="">Set status…</option>
+            {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <select
+            style={{ fontSize: 12, fontWeight: 600, background: 'rgba(255,255,255,.1)', color: 'white', border: '1px solid rgba(255,255,255,.2)', borderRadius: 6, padding: '4px 8px', cursor: 'pointer' }}
+            value={bulkSection}
+            onChange={e => { if (e.target.value) applyBulkSection(e.target.value as Section) }}
+          >
+            <option value="">Move to…</option>
+            <option value="mw">Marketwake</option>
+            <option value="client">Client</option>
+            <option value="done">Completed</option>
+          </select>
+          <button
+            style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,.5)', background: 'none', border: 'none', cursor: 'pointer', padding: '4px 6px' }}
+            onClick={() => setSelectedIds(new Set())}
+          >✕ Clear</button>
+        </div>
+      )}
 
-      {/* Hidden logo file input */}
-      <input
-        ref={logoInputRef}
-        type="file"
-        accept="image/png,image/jpeg,image/gif,image/svg+xml,image/webp"
-        style={{ display: 'none' }}
-        onChange={handleLogoUpload}
-      />
+      <ConfettiCelebration active={showCelebration} />
 
-      {/* Import Drafts modal */}
+      <input ref={logoInputRef} type="file" accept="image/png,image/jpeg,image/gif,image/svg+xml,image/webp" style={{ display: 'none' }} onChange={handleLogoUpload}/>
+
+      {/* Import modal */}
       {showImportModal && (
         <div className="modal-overlay" onClick={e => { if (e.target === e.currentTarget) setShowImportModal(false) }}>
           <div className="modal-box" style={{ maxWidth: 520 }}>
@@ -473,16 +655,11 @@ export default function TrackerView({ data }: Props) {
               <button className={`import-tab${importTab === 'form' ? ' active' : ''}`} onClick={() => setImportTab('form')}>Single Task</button>
             </div>
             {importTab === 'json' ? (
-              <div className="import-pane active">
-                <textarea
-                  className="import-textarea"
-                  value={importJson}
-                  onChange={e => setImportJson(e.target.value)}
-                  placeholder={'[\n  {\n    "name": "Monthly Report",\n    "notes": "Analytics overview",\n    "status": "Up Next",\n    "section": "mw"\n  }\n]'}
-                />
-              </div>
+              <textarea className="import-textarea" value={importJson} onChange={e => setImportJson(e.target.value)}
+                placeholder={'[\n  {\n    "name": "Monthly Report",\n    "notes": "Analytics overview",\n    "status": "Up Next",\n    "section": "mw",\n    "due_date": "2024-05-01"\n  }\n]'}
+              />
             ) : (
-              <div className="import-pane active">
+              <>
                 <div className="import-form-row">
                   <div className="import-label">Deliverable Name</div>
                   <input className="import-input" value={iformName} onChange={e => setIformName(e.target.value)} placeholder="e.g. Q2 Social Media Calendar"/>
@@ -493,6 +670,10 @@ export default function TrackerView({ data }: Props) {
                 </div>
                 <div style={{ display: 'flex', gap: 12 }}>
                   <div className="import-form-row" style={{ flex: 1 }}>
+                    <div className="import-label">Due Date</div>
+                    <input className="import-input" type="date" value={iformDue} onChange={e => setIformDue(e.target.value)}/>
+                  </div>
+                  <div className="import-form-row" style={{ flex: 1 }}>
                     <div className="import-label">Status</div>
                     <select className="import-input" value={iformStatus} onChange={e => setIformStatus(e.target.value as TaskStatus)}>
                       {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
@@ -500,20 +681,18 @@ export default function TrackerView({ data }: Props) {
                   </div>
                   <div className="import-form-row" style={{ flex: 1 }}>
                     <div className="import-label">Section</div>
-                    <select className="import-input" value={iformSection} onChange={e => setIformSection(e.target.value as 'mw' | 'client')}>
+                    <select className="import-input" value={iformSection} onChange={e => setIformSection(e.target.value as 'mw'|'client')}>
                       <option value="mw">Marketwake</option>
                       <option value="client">Client</option>
                     </select>
                   </div>
                 </div>
-              </div>
+              </>
             )}
             {importError && <div className="import-error">{importError}</div>}
             <div className="modal-actions">
               <button className="modal-cancel" onClick={() => setShowImportModal(false)}>Cancel</button>
-              <button className="btn-primary" onClick={importTab === 'json' ? processImportJson : processImportForm}>
-                Add to Draft Queue
-              </button>
+              <button className="btn-primary" onClick={importTab === 'json' ? processImportJson : processImportForm}>Add to Draft Queue</button>
             </div>
           </div>
         </div>
@@ -522,49 +701,39 @@ export default function TrackerView({ data }: Props) {
   )
 }
 
-// ── TrackerSection sub-component ──────────────────────────────
+// ── TrackerSection ─────────────────────────────────────────────
 interface SectionProps {
-  sec: Section
-  taskIds: string[]
-  tasks: Record<string, Task>
-  collapsed: boolean
-  filter: string
-  editingNameId: string | null
-  editingDueId: string | null
-  openPickerId: string | null
-  openLinkId: string | null
-  openCommentId: string | null
-  editingNoteId: string | null
+  sec: Section; taskIds: string[]; tasks: Record<string, Task>
+  collapsed: boolean; filter: string
+  editingNameId: string | null; editingDueId: string | null
+  openPickerId: string | null; openLinkId: string | null
+  openCommentId: string | null; editingNoteId: string | null
+  selectedIds: Set<string>
   onToggle: () => void
-  onNameEdit: (id: string) => void
-  onNameSave: (id: string, val: string) => void
-  onDueEdit: (id: string) => void
-  onDueSave: (id: string, val: string) => void
-  onStatusOpen: (id: string) => void
-  onStatusChange: (id: string, status: TaskStatus) => void
-  onLinkOpen: (id: string) => void
-  onLinkSave: (id: string, url: string, label: string) => void
-  onNoteEdit: (id: string) => void
-  onNoteSave: (id: string, val: string) => void
-  onCommentOpen: (id: string) => void
-  onCommentSave: (id: string, val: string) => void
+  onNameEdit: (id: string) => void; onNameSave: (id: string, val: string) => void
+  onDueEdit: (id: string) => void; onDueSave: (id: string, val: string) => void
+  onStatusOpen: (id: string) => void; onStatusChange: (id: string, s: TaskStatus) => void
+  onLinkOpen: (id: string) => void; onLinkSave: (id: string, url: string, label: string) => void
+  onNoteEdit: (id: string) => void; onNoteSave: (id: string, val: string) => void
+  onCommentOpen: (id: string) => void; onCommentSave: (id: string, val: string) => void
   onAddItem: () => void
+  onDragStart: (id: string, sec: Section) => void
+  onDragOver: (e: React.DragEvent, overId: string, sec: Section) => void
+  onDragEnd: (sec: Section) => void
+  onArchive?: () => void
+  onToggleSelect: (id: string) => void
+  onToggleSelectAll: (ids: string[]) => void
 }
 
 function TrackerSection({
   sec, taskIds, tasks, collapsed, filter,
   editingNameId, editingDueId, openPickerId, openLinkId, openCommentId, editingNoteId,
-  onToggle, onNameEdit, onNameSave, onDueEdit, onDueSave,
+  selectedIds, onToggle, onNameEdit, onNameSave, onDueEdit, onDueSave,
   onStatusOpen, onStatusChange, onLinkOpen, onLinkSave,
-  onNoteEdit, onNoteSave, onCommentOpen, onCommentSave, onAddItem,
+  onNoteEdit, onNoteSave, onCommentOpen, onCommentSave,
+  onAddItem, onDragStart, onDragOver, onDragEnd, onArchive,
+  onToggleSelect, onToggleSelectAll,
 }: SectionProps) {
-
-  const visibleCount = taskIds.filter(id => {
-    const t = tasks[id]
-    return t && (filter === 'all' || t.status === filter)
-  }).length
-
-  // Local state for link and comment editing
   const [linkUrl, setLinkUrl] = useState<Record<string, string>>({})
   const [linkLabel, setLinkLabel] = useState<Record<string, string>>({})
   const [noteText, setNoteText] = useState<Record<string, string>>({})
@@ -572,16 +741,23 @@ function TrackerSection({
   const [nameText, setNameText] = useState<Record<string, string>>({})
   const [dueText, setDueText] = useState<Record<string, string>>({})
 
+  const visibleCount = taskIds.filter(id => tasks[id] && (filter === 'all' || tasks[id].status === filter)).length
+
   return (
     <div className="tracker-section">
       <div className="section-header" onClick={onToggle}>
-        <div className="section-accent" style={{ background: SECTION_ACCENTS[sec] }} />
+        <div className="section-accent" style={{ background: SECTION_ACCENTS[sec] }}/>
         <span className="section-title-txt">{SECTION_LABELS[sec]}</span>
         <span className="section-count">{visibleCount} item{visibleCount !== 1 ? 's' : ''}</span>
+        {onArchive && visibleCount > 0 && (
+          <button
+            className="btn-cancel"
+            style={{ fontSize: 11, padding: '2px 8px', marginRight: 6 }}
+            onClick={e => { e.stopPropagation(); onArchive() }}
+          >Archive all</button>
+        )}
         <div className={`section-chev${collapsed ? '' : ' open'}`}>
-          <svg viewBox="0 0 16 16" fill="none">
-            <path d="M6 4l4 4-4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
+          <svg viewBox="0 0 16 16" fill="none"><path d="M6 4l4 4-4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
         </div>
       </div>
 
@@ -590,6 +766,14 @@ function TrackerSection({
           <table className="tracker-table">
             <thead>
               <tr>
+                <th style={{ width: 32, padding: '7px 4px 7px 12px' }}>
+                  <input
+                    type="checkbox"
+                    style={{ cursor: 'pointer' }}
+                    checked={taskIds.length > 0 && taskIds.every(id => selectedIds.has(id))}
+                    onChange={() => onToggleSelectAll(taskIds)}
+                  />
+                </th>
                 <th className="col-drag"/>
                 <th className="col-item">Deliverable</th>
                 <th className="col-status">Status</th>
@@ -609,8 +793,26 @@ function TrackerSection({
                 const overdue = task.due_date && new Date(task.due_date + 'T00:00:00') < today && task.status !== 'Complete'
 
                 return (
-                  <tr key={id} className={isHidden ? 'hidden-row' : ''}>
-                    {/* Drag handle (visual only — drag-to-reorder can be added with dnd-kit) */}
+                  <tr
+                    key={id}
+                    className={isHidden ? 'hidden-row' : ''}
+                    draggable
+                    onDragStart={() => onDragStart(id, sec)}
+                    onDragOver={e => onDragOver(e, id, sec)}
+                    onDragEnd={() => onDragEnd(sec)}
+                    style={{ cursor: 'grab' }}
+                  >
+                    {/* Checkbox */}
+                    <td style={{ width: 32, padding: '9px 4px 9px 12px' }} onClick={e => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        style={{ cursor: 'pointer' }}
+                        checked={selectedIds.has(id)}
+                        onChange={() => onToggleSelect(id)}
+                      />
+                    </td>
+
+                    {/* Drag handle */}
                     <td className="col-drag">
                       <div className="drag-handle">
                         <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -627,42 +829,36 @@ function TrackerSection({
                     {/* Name */}
                     <td className="col-item">
                       <div className={`efield${editingNameId === id ? ' editing' : ''}`}>
-                        <div
-                          className="efield-name"
-                          onClick={() => { setNameText(p => ({ ...p, [id]: task.name })); onNameEdit(id) }}
-                        >{task.name || <span className="muted">Untitled</span>}</div>
+                        <div className="efield-name" onClick={() => { setNameText(p => ({...p,[id]:task.name})); onNameEdit(id) }}>
+                          {task.name || <span className="muted">Untitled</span>}
+                        </div>
                         <input
                           className="efield-input"
                           value={nameText[id] ?? task.name}
-                          onChange={e => setNameText(p => ({ ...p, [id]: e.target.value }))}
+                          onChange={e => setNameText(p => ({...p,[id]:e.target.value}))}
                           onBlur={() => onNameSave(id, nameText[id] ?? task.name)}
                           onKeyDown={e => { if (e.key === 'Enter') onNameSave(id, nameText[id] ?? task.name) }}
                           autoFocus={editingNameId === id}
                         />
                       </div>
-                      {task.ai_drafted && <span className="ai-drafted-badge">AI</span>}
+                      {task.updated_at && (
+                        <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2, paddingLeft: 4 }}>
+                          Updated {timeAgo(task.updated_at)}
+                        </div>
+                      )}
                     </td>
 
-                    {/* Status */}
-                    <td className="col-status">
+                    {/* Status — fixed z-index so picker never clips */}
+                    <td className="col-status" style={{ overflow: 'visible', position: 'relative', zIndex: openPickerId === id ? 300 : 'auto' }}>
                       <div className="status-wrap">
-                        <span
-                          className="status-badge"
-                          style={{ background: cfg.bg, color: cfg.color }}
-                          onClick={() => onStatusOpen(id)}
-                        >
-                          <span className="dot" style={{ background: cfg.dot }}/>
-                          {task.status}
+                        <span className="status-badge" style={{ background: cfg.bg, color: cfg.color }} onClick={() => onStatusOpen(id)}>
+                          <span className="dot" style={{ background: cfg.dot }}/>{task.status}
                         </span>
-                        <div className={`status-picker${openPickerId === id ? ' open' : ''}`}>
+                        <div className={`status-picker${openPickerId === id ? ' open' : ''}`} style={{ position: 'absolute', zIndex: 400 }}>
                           {STATUSES.map(s => {
                             const sc = STATUS_CONFIG[s]
                             return (
-                              <div
-                                key={s}
-                                className={`picker-opt${task.status === s ? ' picker-active' : ''}`}
-                                onClick={() => onStatusChange(id, s)}
-                              >
+                              <div key={s} className={`picker-opt${task.status === s ? ' picker-active' : ''}`} onClick={() => onStatusChange(id, s)}>
                                 <span className="dot" style={{ background: sc.dot }}/>{s}
                               </div>
                             )
@@ -674,15 +870,11 @@ function TrackerSection({
                     {/* Due date */}
                     <td className="col-due">
                       <div className={`due-wrap${editingDueId === id ? ' editing' : ''}`}>
-                        <div
-                          className={`due-display${overdue ? ' overdue' : ''}`}
-                          onClick={() => { setDueText(p => ({ ...p, [id]: task.due_date ?? '' })); onDueEdit(id) }}
-                        >{task.due_date ? new Date(task.due_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : <span className="muted">—</span>}</div>
-                        <input
-                          className="due-input"
-                          type="date"
-                          value={dueText[id] ?? task.due_date ?? ''}
-                          onChange={e => setDueText(p => ({ ...p, [id]: e.target.value }))}
+                        <div className={`due-display${overdue ? ' overdue' : ''}`} onClick={() => { setDueText(p => ({...p,[id]:task.due_date??''})); onDueEdit(id) }}>
+                          {task.due_date ? new Date(task.due_date + 'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}) : <span className="muted">—</span>}
+                        </div>
+                        <input className="due-input" type="date" value={dueText[id] ?? task.due_date ?? ''}
+                          onChange={e => setDueText(p => ({...p,[id]:e.target.value}))}
                           onBlur={() => onDueSave(id, dueText[id] ?? '')}
                           autoFocus={editingDueId === id}
                         />
@@ -690,65 +882,53 @@ function TrackerSection({
                     </td>
 
                     {/* Link */}
-                    <td className="col-link">
+                    <td className="col-link" style={{ overflow: 'visible', position: 'relative', zIndex: openLinkId === id ? 300 : 'auto' }}>
                       <div className="link-cell">
-                        {task.link_url ? (
-                          <a className="link-chip" href={task.link_url} target="_blank" rel="noopener noreferrer">
-                            {task.link_label || 'Link'}
-                          </a>
-                        ) : (
-                          <span className="link-add" onClick={() => { setLinkUrl(p => ({ ...p, [id]: task.link_url })); setLinkLabel(p => ({ ...p, [id]: task.link_label })); onLinkOpen(id) }}>+ Add</span>
-                        )}
-                        {task.link_url && <span className="link-add" style={{ marginLeft: 4 }} onClick={() => { setLinkUrl(p => ({ ...p, [id]: task.link_url })); setLinkLabel(p => ({ ...p, [id]: task.link_label })); onLinkOpen(id) }}>✎</span>}
-                        <div className={`link-popover${openLinkId === id ? ' open' : ''}`}>
-                          <input placeholder="URL" value={linkUrl[id] ?? ''} onChange={e => setLinkUrl(p => ({ ...p, [id]: e.target.value }))}/>
-                          <input placeholder="Label (optional)" value={linkLabel[id] ?? ''} onChange={e => setLinkLabel(p => ({ ...p, [id]: e.target.value }))}/>
+                        {task.link_url
+                          ? <a className="link-chip" href={task.link_url} target="_blank" rel="noopener noreferrer">{task.link_label || 'Link'}</a>
+                          : <span className="link-add" onClick={() => { setLinkUrl(p=>({...p,[id]:task.link_url})); setLinkLabel(p=>({...p,[id]:task.link_label})); onLinkOpen(id) }}>+ Add</span>
+                        }
+                        {task.link_url && <span className="link-add" style={{marginLeft:4}} onClick={() => { setLinkUrl(p=>({...p,[id]:task.link_url})); setLinkLabel(p=>({...p,[id]:task.link_label})); onLinkOpen(id) }}>✎</span>}
+                        <div className={`link-popover${openLinkId === id ? ' open' : ''}`} style={{ zIndex: 400 }}>
+                          <input placeholder="URL" value={linkUrl[id]??''} onChange={e=>setLinkUrl(p=>({...p,[id]:e.target.value}))}/>
+                          <input placeholder="Label (optional)" value={linkLabel[id]??''} onChange={e=>setLinkLabel(p=>({...p,[id]:e.target.value}))}/>
                           <div className="link-popover-actions">
-                            <button className="btn-cancel" onClick={() => onLinkOpen(id)}>Cancel</button>
-                            <button className="btn-save" onClick={() => onLinkSave(id, linkUrl[id] ?? '', linkLabel[id] ?? '')}>Save</button>
+                            <button className="btn-cancel" onClick={()=>onLinkOpen(id)}>Cancel</button>
+                            <button className="btn-save" onClick={()=>onLinkSave(id,linkUrl[id]??'',linkLabel[id]??'')}>Save</button>
                           </div>
                         </div>
                       </div>
                     </td>
 
-                    {/* Notes / Description */}
+                    {/* Notes */}
                     <td className="col-notes">
                       {editingNoteId === id ? (
                         <div className="notes-editor open">
-                          <textarea
-                            className="notes-textarea"
-                            value={noteText[id] ?? task.notes}
-                            onChange={e => setNoteText(p => ({ ...p, [id]: e.target.value }))}
-                            autoFocus
-                          />
+                          <textarea className="notes-textarea" value={noteText[id]??task.notes} onChange={e=>setNoteText(p=>({...p,[id]:e.target.value}))} autoFocus/>
                           <div className="notes-actions">
-                            <button className="btn-save" onClick={() => onNoteSave(id, noteText[id] ?? task.notes)}>Save</button>
-                            <button className="btn-cancel" onClick={() => onNoteEdit('')}>Cancel</button>
+                            <button className="btn-save" onClick={()=>onNoteSave(id,noteText[id]??task.notes)}>Save</button>
+                            <button className="btn-cancel" onClick={()=>onNoteEdit('')}>Cancel</button>
                           </div>
                         </div>
                       ) : (
-                        <div className="notes-display-wrap" onClick={() => { setNoteText(p => ({ ...p, [id]: task.notes })); onNoteEdit(id) }}>
+                        <div className="notes-display-wrap" onClick={()=>{setNoteText(p=>({...p,[id]:task.notes}));onNoteEdit(id)}}>
                           {task.notes ? <span className="notes-text">{task.notes}</span> : <span className="muted">—</span>}
                         </div>
                       )}
                     </td>
 
                     {/* Comments */}
-                    <td className="col-comments">
-                      <div className="comment-cell" onClick={() => { setCommentText(p => ({ ...p, [id]: task.comments })); onCommentOpen(id) }}>
+                    <td className="col-comments" style={{ overflow: 'visible', position: 'relative', zIndex: openCommentId === id ? 300 : 'auto' }}>
+                      <div className="comment-cell" onClick={()=>{setCommentText(p=>({...p,[id]:task.comments}));onCommentOpen(id)}}>
                         {task.comments
                           ? <><span className="comment-dot"/><span className="comment-text has-comment">{task.comments}</span></>
                           : <><span className="comment-text empty">Add comment…</span><span className="comment-hint">✎</span></>
                         }
-                        <div className={`comment-editor${openCommentId === id ? ' open' : ''}`} onClick={e => e.stopPropagation()}>
-                          <textarea
-                            value={commentText[id] ?? task.comments}
-                            onChange={e => setCommentText(p => ({ ...p, [id]: e.target.value }))}
-                            autoFocus={openCommentId === id}
-                          />
+                        <div className={`comment-editor${openCommentId === id ? ' open' : ''}`} style={{ zIndex: 400 }} onClick={e=>e.stopPropagation()}>
+                          <textarea value={commentText[id]??task.comments} onChange={e=>setCommentText(p=>({...p,[id]:e.target.value}))} autoFocus={openCommentId===id}/>
                           <div className="notes-actions">
-                            <button className="btn-save" onClick={() => onCommentSave(id, commentText[id] ?? task.comments)}>Save</button>
-                            <button className="btn-cancel" onClick={() => onCommentOpen(id)}>Cancel</button>
+                            <button className="btn-save" onClick={()=>onCommentSave(id,commentText[id]??task.comments)}>Save</button>
+                            <button className="btn-cancel" onClick={()=>onCommentOpen(id)}>Cancel</button>
                           </div>
                         </div>
                       </div>
@@ -760,9 +940,7 @@ function TrackerSection({
           </table>
           <div className="add-row">
             <button className="btn-add-item" onClick={onAddItem}>
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                <path d="M6 1v10M1 6h10" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-              </svg>
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 1v10M1 6h10" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
               Add item
             </button>
           </div>
@@ -770,19 +948,4 @@ function TrackerSection({
       )}
     </div>
   )
-}
-
-// ── Minimal static client HTML builder ───────────────────────
-// Used for the "Export" button (generates a standalone file)
-function buildClientHTML(client: Client, tasks: Task[]): string {
-  const rows = (sec: Section) => tasks
-    .filter(t => t.section === sec)
-    .map(t => `<tr><td>${t.name}</td><td>${t.status}</td><td>${t.due_date ?? ''}</td><td>${t.notes}</td></tr>`)
-    .join('')
-  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${client.name} Tracker</title></head>
-<body style="font-family:sans-serif;padding:32px">
-<h1>${client.name}</h1><p>Prepared by Marketwake</p>
-<h2>Marketwake Action Items</h2><table border="1" cellpadding="6"><tr><th>Deliverable</th><th>Status</th><th>Due</th><th>Description</th></tr>${rows('mw')}</table>
-<h2>Client Action Items</h2><table border="1" cellpadding="6"><tr><th>Deliverable</th><th>Status</th><th>Due</th><th>Description</th></tr>${rows('client')}</table>
-</body></html>`
 }

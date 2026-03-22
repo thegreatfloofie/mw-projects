@@ -120,28 +120,11 @@ export default function ClientPublicView({ client, tasks }: Props) {
       </header>
 
       <div style={{ flex: 1, padding: '32px 28px', maxWidth: 1400, width: '100%', margin: '0 auto' }}>
-        {/* Stats row */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 28 }}>
-          {[
-            { num: total,       label: 'Total Items',  accent: '#CEFF58' },
-            { num: inProgress,  label: 'In Progress',  accent: '#0038FF' },
-            { num: awaitingYou, label: 'Awaiting You', accent: '#FF5E30' },
-            { num: completed,   label: 'Completed',    accent: '#B4C6BB' },
-          ].map(s => (
-            <div key={s.label} style={{ background: 'white', borderRadius: 10, padding: '16px 18px', borderLeft: `4px solid ${s.accent}`, border: `1.5px solid #e5e7eb`, borderLeftWidth: 4, borderLeftColor: s.accent }}>
-              <div style={{ fontSize: 28, fontWeight: 800, color: '#111827' }}>{s.num}</div>
-              <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>{s.label}</div>
-            </div>
-          ))}
-        </div>
-
-        {/* Progress bar */}
-        <div style={{ background: 'white', borderRadius: 10, padding: '14px 18px', marginBottom: 24, border: '1.5px solid #e5e7eb' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 12, fontWeight: 600, color: '#6b7280' }}>
-            <span>Overall Progress</span><span>{pct}%</span>
-          </div>
-          <div style={{ height: 6, background: '#e5e7eb', borderRadius: 3, overflow: 'hidden' }}>
-            <div style={{ height: '100%', width: `${pct}%`, background: '#CEFF58', borderRadius: 3, boxShadow: '0 0 8px rgba(206,255,88,0.5)', transition: 'width .3s' }}/>
+        {/* Single stat — Awaiting You only */}
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ display: 'inline-block', background: 'white', borderRadius: 10, padding: '16px 24px', border: '1.5px solid #e5e7eb', borderLeftWidth: 4, borderLeftColor: '#FF5E30' }}>
+            <div style={{ fontSize: 32, fontWeight: 800, color: '#111827' }}>{awaitingYou}</div>
+            <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>Awaiting Your Action</div>
           </div>
         </div>
 
