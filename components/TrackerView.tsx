@@ -640,7 +640,6 @@ export default function TrackerView({ data }: Props) {
               </div>
             )}
           </div>
-          )}
         </main>
       </div>
 

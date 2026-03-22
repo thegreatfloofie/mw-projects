@@ -355,5 +355,15 @@ body {
   100% { opacity: 0; transform: translate(var(--fx),var(--fy)) scale(0); }
 }
 
+/* ── Delete button (hover-reveal) ─────────────────────────── */
+.btn-delete-task {
+  opacity: 0; background: none; border: none; cursor: pointer;
+  color: var(--g400); padding: 3px; border-radius: 4px;
+  display: flex; align-items: center; justify-content: center;
+  transition: opacity .15s, color .15s, background .15s;
+}
+.tracker-table tbody tr:hover .btn-delete-task { opacity: 1; }
+.btn-delete-task:hover { color: #dc2626; background: #fef2f2; }
+
 /* ── Misc ─────────────────────────────────────────────────── */
 .section-title-input { font-size: 13px; font-weight: 700; border: none; background: transparent; outline: none; color: var(--g900); width: 180px; }
