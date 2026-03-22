@@ -1,6 +1,7 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import { Task, Section } from '@/lib/types'
 
 const STATUS_CONFIG: Record<string, { bg: string; color: string; dot: string }> = {
@@ -91,6 +92,17 @@ function SectionTable({ title, accent, tasks }: { title: string; accent: string;
 }
 
 export default function ClientPublicView({ client, tasks }: Props) {
+  const router = useRouter()
+
+  // Auto-refresh every 30s so AM changes appear without manual reload.
+  // Also refresh on window focus (tab switch back).
+  useEffect(() => {
+    const interval = setInterval(() => router.refresh(), 30_000)
+    const onFocus = () => router.refresh()
+    window.addEventListener('focus', onFocus)
+    return () => { clearInterval(interval); window.removeEventListener('focus', onFocus) }
+  }, [router])
+
   const mwTasks     = tasks.filter(t => t.section === 'mw')
   const clientTasks = tasks.filter(t => t.section === 'client')
   const doneTasks   = tasks.filter(t => t.section === 'done')

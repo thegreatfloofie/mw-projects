@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import MWLogo from './MWLogo'
 
 export default function LoginForm() {
   const router = useRouter()
@@ -32,8 +33,7 @@ export default function LoginForm() {
   return (
     <div className="login-card">
       <div className="login-logo">
-        {/* Inline Marketwake wordmark — replace src with your logo if desired */}
-        <span style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.5px' }}>Marketwake</span>
+        <MWLogo invert={false} height={28} />
       </div>
       <div className="login-title">Welcome back</div>
       <div className="login-sub">Sign in to the Deliverables Hub</div>

@@ -145,11 +145,12 @@ export default function TrackerView({ data }: Props) {
     }, 600)
   }
 
-  function patchTask(id: string, patch: Partial<Task>, saveNow = false) {
+  async function patchTask(id: string, patch: Partial<Task>, saveNow = false) {
     setTasks(prev => ({ ...prev, [id]: { ...prev[id], ...patch } }))
     if (saveNow) {
       clearTimeout(saveTimers.current[id])
-      supabase.from('tasks').update(patch).eq('id', id)
+      const { error } = await supabase.from('tasks').update(patch).eq('id', id)
+      if (error) console.error('[patchTask] save failed:', error.message, patch)
     } else {
       scheduleSave(id, patch)
     }
@@ -841,11 +842,6 @@ function TrackerSection({
                           autoFocus={editingNameId === id}
                         />
                       </div>
-                      {task.updated_at && (
-                        <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2, paddingLeft: 4 }}>
-                          Updated {timeAgo(task.updated_at)}
-                        </div>
-                      )}
                     </td>
 
                     {/* Status — fixed z-index so picker never clips */}
